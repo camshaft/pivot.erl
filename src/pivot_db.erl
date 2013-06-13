@@ -2,8 +2,17 @@
 
 -type error() :: {{error, any()}, conn()}.
 -type bandit() :: binary().
+-type arm() :: binary().
 -type conn() :: term().
 -type options() :: [{binary(), term()}].
+-type count_diff() :: pos_integer().
+-type score_diff() :: float().
+
+%% Note:
+% The score, when in conflict with other writes, proably should
+% be averaged instead of all being applied - I'll have to do some
+% looking into
+-type patch() :: {arm(), count_diff(), score_diff()}.
 
 -callback init(Opts)
     -> {ok, conn()}
@@ -25,7 +34,7 @@
     | error()
     when Bandit::bandit(), Conn::conn().
 
--callback update(Bandit, Patch, Conn)
+-callback update(Bandit, Patches, Conn)
     -> {ok, conn()}
     | error()
-    when Bandit::bandit(), Patch::pivot_mab:state(), Conn::conn().
+    when Bandit::bandit(), Patches::[patch()], Conn::conn().
