@@ -1,0 +1,11 @@
+{application, pivot, [
+  {id, "pivot"},
+  {description, "Simple feature variant testing framework for erlang"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [
+    kernel,
+    stdlib
+  ]},
+  {env, []}
+]}.
