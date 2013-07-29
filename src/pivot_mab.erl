@@ -4,7 +4,7 @@
 -type options() :: [{binary(), term()}].
 -type state() :: [{arm(), {pos_integer(), float()}}].
 -type config() :: term().
-%% TODO can we specify a float range? need to be 0.0..1.0
+%% TODO can we specify a float range? needs to be 0.0..1.0
 -type reward() :: float().
 
 -export_type([
