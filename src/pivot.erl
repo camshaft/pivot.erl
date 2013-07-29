@@ -1,7 +1,7 @@
 -module(pivot).
 
 % app api
--export([start/1]).
+-export([start/4]).
 -export([stop/1]).
 
 % client
@@ -9,7 +9,7 @@
 
 % server
 -export([assign/3]).
--export([register/3]).
+-export([register/4]).
 
 % api
 -export([list/1]).
@@ -20,7 +20,7 @@
 
 % app api
 
-start(_Ref) ->
+start(_Ref, _UserDB, _MabDB, _MabList) ->
   ok.
 
 stop(_Ref) ->
@@ -38,8 +38,8 @@ track(_Ref, _Env, _Event, _User) ->
 assign(_Ref, _Env, _User) ->
   [].
 
-% -spec register(ref(), bandit(), [arm()]) -> ok.
-register(_Ref, _Bandit, _Arms) ->
+% -spec register(ref(), bandit(), [arm()], boolean()) -> ok.
+register(_Ref, _Bandit, _Arms, _WIP) ->
   ok.
 
 % api
