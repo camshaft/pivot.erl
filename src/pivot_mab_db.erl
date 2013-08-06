@@ -1,6 +1,7 @@
 -module(pivot_mab_db).
 
 -type error() :: {error, any()}.
+-type app() :: binary().
 -type bandit() :: binary().
 -type arm() :: binary().
 -type count_diff() :: pos_integer().
@@ -12,21 +13,22 @@
 % looking into
 -type patch() :: {arm(), count_diff(), score_diff()}.
 
--callback register(Name, Arms, WIP)
+-callback register(App, Bandit, Arms, WIP)
     -> ok
     | error()
-    when Name::bandit(), Arms::[binary()], WIP::boolean().
+    when App::app(), Bandit::bandit(), Arms::[binary()], WIP::boolean().
 
--callback list()
+-callback list(App)
     -> {ok, [bandit()]}
-    | error().
+    | error()
+    when App::app().
 
--callback report(Bandit)
+-callback report(App, Bandit)
     -> {ok, pivot_mab:state()}
     | error()
-    when Bandit::bandit().
+    when App:app(), Bandit::bandit().
 
--callback update(Bandit, Patches)
+-callback update(App, Bandit, Patches)
     -> ok
     | error()
-    when Bandit::bandit(), Patches::[patch()].
+    when App:app(), Bandit::bandit(), Patches::[patch()].
