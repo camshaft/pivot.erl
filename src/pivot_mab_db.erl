@@ -26,9 +26,9 @@
 -callback report(App, Bandit)
     -> {ok, pivot_mab:state()}
     | error()
-    when App:app(), Bandit::bandit().
+    when App::app(), Bandit::bandit().
 
 -callback update(App, Bandit, Patches)
     -> ok
     | error()
-    when App:app(), Bandit::bandit(), Patches::[patch()].
+    when App::app(), Bandit::bandit(), Patches::[patch()].

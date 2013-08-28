@@ -1,8 +1,8 @@
--module (pivot_mab_helpers).
+-module(pivot_mab_helpers).
 
--export ([generate/4]).
+-export([generate/4]).
 
--include_lib ("eunit/include/eunit.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 generate(Mod, Opts, Runs, ArmMeans) ->
   fun () ->

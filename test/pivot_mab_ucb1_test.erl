@@ -1,6 +1,6 @@
--module (pivot_mab_ucb1_test).
+-module(pivot_mab_ucb1_test).
 
--include_lib ("eunit/include/eunit.hrl").
+-include_lib("eunit/include/eunit.hrl").
 
 simple_test_() ->
   pivot_mab_helpers:generate(pivot_mab_ucb1, [], 1000, [

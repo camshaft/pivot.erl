@@ -4,6 +4,8 @@
 -export([init/1]).
 -export([select/2]).
 -export([update/4]).
+-export([diff/3]).
+-export([report/2]).
 
 -spec init(Opts)
     -> {ok, pivot_mab:config()}
@@ -54,3 +56,22 @@ update_score(ArmName, Reward, {ArmName, {Count, Score}}) ->
   {ArmName, {N, NewScore}};
 update_score(_, _, Arm) ->
   Arm.
+
+diff(OldState, NewState, _Config) ->
+  {ok, do_diff(OldState, NewState, [])}.
+
+do_diff([], [], Acc) ->
+  Acc;
+do_diff([Arm|OldState], [Arm|NewState], Acc) ->
+  do_diff(OldState, NewState, Acc);
+do_diff([{Arm, {OldCount, OldScore}}|OldState], [{Arm, {NewCount, NewScore}}|NewState], Acc) ->
+  do_diff(OldState, NewState, [{Arm, {NewCount - OldCount, NewScore - OldScore}}|Acc]).
+
+report(State, _Config) ->
+  TotalCount = count(State, 0),
+  {ok, TotalCount, [{Arm, calculate_score(TotalCount, Count, Score)} || {Arm, {Count, Score}} <- State]}.
+
+count([], TotalCount) ->
+  TotalCount;
+count([{_Arm, {Count, _Score}}|Arms], TotalCount) ->
+  count(Arms, Count + TotalCount).
