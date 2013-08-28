@@ -66,6 +66,9 @@ track(Ref, App, Event, User) ->
 
     {ok, Diff} = Algorithm:diff(State, NewState, AlgorithmConfig),
 
+    %% TODO save the new metadata back to the user db
+    % we probably should mark this arm as 'tracked'
+
     {Bandit, Arm, NewState, Diff}
   end || {Bandit, Arm, _Meta} <- Assignments],
 
