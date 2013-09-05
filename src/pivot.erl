@@ -42,37 +42,41 @@ stop(_Ref) ->
 track(Ref, App, Event, User) ->
   % Lookup event reward from the event_db
   {ok, EventDB} = ref_server:get(?MODULE, Ref, event_db),
-  {ok, Reward} = EventDB:get(App, Event),
+  case EventDB:get(App, Event) of
+    {ok, Reward} ->
+      % Lookup all of the assigned user bandit arms from the user_db
+      {ok, UserDB} = ref_server:get(?MODULE, Ref, user_db),
+      {ok, Assignments} = UserDB:assignments(App, User),
 
-  % Lookup all of the assigned user bandit arms from the user_db
-  {ok, UserDB} = ref_server:get(?MODULE, Ref, user_db),
-  {ok, Assignments} = UserDB:assignments(App, User),
+      {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
 
-  {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
+      {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
 
-  {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
+      % Save the rewards for the arms to the mab_state_db
+      {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
 
-  % Save the rewards for the arms to the mab_state_db
-  {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
+      BanditArmPairs = [begin
+        {ok, Config} = MabConfigDB:config(App, Bandit),
+        {ok, EnabledArms} = MabArmsDB:all(App, Bandit),
+        {ok, State} = MabStateDB:get(App, Bandit, EnabledArms),
 
-  BanditArmPairs = [begin
-    {ok, Config} = MabConfigDB:config(App, Bandit),
-    {ok, EnabledArms} = MabArmsDB:all(App, Bandit),
-    {ok, State} = MabStateDB:get(App, Bandit, EnabledArms),
+        Algorithm = fast_key:get(algorithm, Config, ?DEFAULT_ALGORITHM),
+        AlgorithmConfig = fast_key:get(algorithm_config, Config, []),
+        {ok, NewState} = Algorithm:update(Arm, Reward, State, AlgorithmConfig),
 
-    Algorithm = fast_key:get(algorithm, Config, ?DEFAULT_ALGORITHM),
-    AlgorithmConfig = fast_key:get(algorithm_config, Config, []),
-    {ok, NewState} = Algorithm:update(Arm, Reward, State, AlgorithmConfig),
+        {ok, Diff} = Algorithm:diff(State, NewState, AlgorithmConfig),
 
-    {ok, Diff} = Algorithm:diff(State, NewState, AlgorithmConfig),
+        %% TODO save the new metadata back to the user db
+        % we probably should mark this arm as 'tracked'
 
-    %% TODO save the new metadata back to the user db
-    % we probably should mark this arm as 'tracked'
+        {Bandit, Arm, NewState, Diff}
+      end || {Bandit, Arm, _Meta} <- Assignments],
 
-    {Bandit, Arm, NewState, Diff}
-  end || {Bandit, Arm, _Meta} <- Assignments],
-
-  MabStateDB:update(App, Reward, BanditArmPairs).
+      MabStateDB:update(App, Reward, BanditArmPairs);
+    _ ->
+      %% The event was not found - don't do anything
+      ok
+  end.
 
 % content owner
 
@@ -139,9 +143,7 @@ register(Ref, App, Bandit, Arms, Config) ->
 
   % Set the arms for the bandit in the mab_arms_db
   {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
-  ok = MabArmsDB:set(App, Bandit, Arms),
-
-  ok.
+  MabArmsDB:set(App, Bandit, Arms).
 
 % api
 
