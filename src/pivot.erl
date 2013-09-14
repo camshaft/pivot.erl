@@ -5,10 +5,10 @@
 -export([stop/1]).
 
 % client
--export([track/4]).
+-export([track/5]).
 
 % server
--export([assign/3]).
+-export([assign/4]).
 -export([register/5]).
 
 % api
@@ -21,16 +21,36 @@
 
 -define(DEFAULT_ALGORITHM, pivot_mab_ucb1).
 
+-record(ref, {
+  user_db,
+  mab_arms_db,
+  mab_state_db,
+  mab_config_db,
+  event_db,
+  app_db
+}).
+
+-record(track, {
+  env,
+  app,
+  event,
+  user,
+  reward,
+  cardinality
+}).
+
 % app api
 
 start(Ref, UserDB, MabArmsDB, MabStateDB, MabConfigDB, EventDB, AppDB) ->
   require([ref_server]),
-  ok = ref_server:set(?MODULE, Ref, user_db, UserDB),
-  ok = ref_server:set(?MODULE, Ref, mab_arms_db, MabArmsDB),
-  ok = ref_server:set(?MODULE, Ref, mab_state_db, MabStateDB),
-  ok = ref_server:set(?MODULE, Ref, mab_config_db, MabConfigDB),
-  ok = ref_server:set(?MODULE, Ref, event_db, EventDB),
-  ok = ref_server:set(?MODULE, Ref, app_db, AppDB),
+  ok = ref_server:set(?MODULE, Ref, ref, #ref{
+    user_db = UserDB,
+    mab_arms_db = MabArmsDB,
+    mab_state_db = MabStateDB,
+    mab_config_db = MabConfigDB,
+    event_db = EventDB,
+    app_db = AppDB
+  }),
   {ok, Ref}.
 
 stop(_Ref) ->
@@ -39,60 +59,73 @@ stop(_Ref) ->
 % client
 
 % -spec track(ref(), app(), event(), user()) -> ok.
-track(Ref, App, Event, User) ->
-  % Lookup event reward from the event_db
-  {ok, EventDB} = ref_server:get(?MODULE, Ref, event_db),
-  case EventDB:get(App, Event) of
-    {ok, Reward} ->
-      % Lookup all of the assigned user bandit arms from the user_db
-      {ok, UserDB} = ref_server:get(?MODULE, Ref, user_db),
-      {ok, Assignments} = UserDB:assignments(App, User),
+track(Ref, Env, App, Event, User) ->
+  lookup_ref(ref_server:get(?MODULE, Ref, ref), #track{env = Env, app = App, event = Event, user = User}, fun lookup_event/2).
 
-      {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
+lookup_ref({ok, Ref}, Track, Next) ->
+  Next(Ref, Track);
+lookup_ref(_, _, _) ->
+  {error, unknown_ref}.
 
-      {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
+lookup_event(Ref = #ref{event_db = EventDB}, Track = #track{env = Env, app = App, event = Event}) ->
+  handle_event(EventDB:get(Env, App, Event), Ref, Track).
 
-      % Save the rewards for the arms to the mab_state_db
-      {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
+handle_event({ok, Reward, Cardinality}, Ref, Track) ->
+  lookup_user_assignments(Ref, Track#track{reward = Reward, cardinality = Cardinality});
+handle_event({ok, Reward}, Ref, Track) ->
+  lookup_user_assignments(Ref, Track#track{reward = Reward});
+handle_event({error, notfound}, _, _) ->
+  ok;
+handle_event(Error, _, _) ->
+  Error.
 
-      BanditArmPairs = [begin
-        {ok, Config} = MabConfigDB:config(App, Bandit),
-        {ok, EnabledArms} = MabArmsDB:all(App, Bandit),
-        {ok, State} = MabStateDB:get(App, Bandit, EnabledArms),
+lookup_user_assignments(Ref = #ref{user_db = UserDB}, Track = #track{env = Env, app = App, user = User}) ->
+  handle_user_assignments(UserDB:assignments(Env, App, User), Ref, Track).
 
-        Algorithm = fast_key:get(algorithm, Config, ?DEFAULT_ALGORITHM),
-        AlgorithmConfig = fast_key:get(algorithm_config, Config, []),
-        {ok, NewState} = Algorithm:update(Arm, Reward, State, AlgorithmConfig),
+handle_user_assignments({ok, Assignments}, Ref, Track) ->
+  maybe_reward(Assignments, Ref, Track);
+handle_user_assignments(Error, _, _) ->
+  Error.
 
-        {ok, Diff} = Algorithm:diff(State, NewState, AlgorithmConfig),
+%% TODO figure out bandit/arm expiration
+%%   do we:
+%%     save an expiration date?
+%%     save the assigned date and then lookup the max length?
 
-        %% TODO save the new metadata back to the user db
-        % we probably should mark this arm as 'tracked'
+maybe_reward([{Bandit, Arm, Usages}|Assignments], Ref = #ref{user_db = UserDB}, Track = #track{env = Env, app = App, user = User, cardinality = Cardinality}) when Cardinality =< Usages, is_integer(Cardinality) ->
+  %% remove the assignment from the user - it's expired
+  ok = UserDB:remove_assignment(Env, App, User, Bandit, Arm),
+  reward({Bandit, Arm}, Ref, Track),
+  maybe_reward(Assignments, Ref, Track);
+maybe_reward([{Bandit, Arm, _Usages}|Assignments], Ref = #ref{user_db = UserDB}, Track = #track{env = Env, app = App, user = User}) ->
+  ok = UserDB:increment_usage(Env, App, User, Bandit, Arm),
+  reward({Bandit, Arm}, Ref, Track),
+  maybe_reward(Assignments, Ref, Track);
+maybe_reward([{Bandit, Arm}|Assignments], Ref, Track) ->
+  reward({Bandit, Arm}, Ref, Track),
+  maybe_reward(Assignments, Ref, Track);
+maybe_reward([], _Ref, _Track) ->
+  ok.
 
-        {Bandit, Arm, NewState, Diff}
-      end || {Bandit, Arm, _Meta} <- Assignments],
+reward({Bandit, Arm}, #ref{mab_state_db = MabStateDB}, #track{env = Env, app = App, reward = Reward})->
+  MabStateDB:add_reward(Env, App, Bandit, Arm, Reward).
 
-      MabStateDB:update(App, Reward, BanditArmPairs);
-    _ ->
-      %% The event was not found - don't do anything
-      ok
-  end.
 
 % content owner
 
 % -spec assign(ref(), app(), user()) -> [{bandit(), arm()}].
-assign(Ref, App, User) ->
+assign(Env, Ref, App, User) ->
   % Lookup the current bandit assignments for the user in the user_db
   {ok, UserDB} = ref_server:get(?MODULE, Ref, user_db),
-  {ok, _Assignments} = UserDB:assignments(App, User),
+  {ok, _Assignments} = UserDB:assignments(Env, App, User),
 
   % List the bandits for the app
   {ok, AppDB} = ref_server:get(?MODULE, Ref, app_db),
-  {ok, Bandits} = AppDB:bandits(App),
+  {ok, Bandits} = AppDB:bandits(Env, App),
 
   % Fetch the bandit configs from the bandit_db (which algorithm, expiration, etc)
   {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
-  {ok, Configs} = MabConfigDB:configs(App, Bandits),
+  {ok, Configs} = MabConfigDB:configs(Env, App, Bandits),
 
   % If the user's bandit selection is still valid just return that
   % TODO
@@ -107,18 +140,18 @@ assign(Ref, App, User) ->
 
   % Filter any disabled arms for each of the bandits
   {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
-  {ok, EnabledArms} = MabArmsDB:enabled(App, EnabledBandit),
+  {ok, EnabledArms} = MabArmsDB:enabled(Env, App, EnabledBandit),
 
   % Fetch the state from the mab_state_db for the bandits
   {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
-  {ok, State} = MabStateDB:get(App, EnabledBandit, EnabledArms),
+  {ok, State} = MabStateDB:get(Env, App, EnabledBandit, EnabledArms),
 
   % Feed the state to the chosen algorithm
   {ok, SelectedArm, _NewState} = Algorithm:select(State, AlgorithmConfig),
 
   % Save the chosen bandits/arms to the user_db
   % TODO
-  ok = UserDB:set(App, User, [{EnabledBandit, SelectedArm, []}]),
+  ok = UserDB:set(Env, App, User, [{EnabledBandit, SelectedArm, []}]),
 
   % Return the assigned arms
   {ok, [{EnabledBandit, SelectedArm}]}.
