@@ -9,7 +9,7 @@
 
 % server
 -export([assign/4]).
--export([register/5]).
+-export([register/6]).
 
 % api
 -export([list/2]).
@@ -21,23 +21,7 @@
 
 -define(DEFAULT_ALGORITHM, pivot_mab_ucb1).
 
--record(ref, {
-  user_db,
-  mab_arms_db,
-  mab_state_db,
-  mab_config_db,
-  event_db,
-  app_db
-}).
-
--record(track, {
-  env,
-  app,
-  event,
-  user,
-  reward,
-  cardinality
-}).
+-include("pivot.hrl").
 
 % app api
 
@@ -60,60 +44,15 @@ stop(_Ref) ->
 
 % -spec track(ref(), app(), event(), user()) -> ok.
 track(Ref, Env, App, Event, User) ->
-  lookup_ref(ref_server:get(?MODULE, Ref, ref), #track{env = Env, app = App, event = Event, user = User}, fun lookup_event/2).
-
-lookup_ref({ok, Ref}, Track, Next) ->
-  Next(Ref, Track);
-lookup_ref(_, _, _) ->
-  {error, unknown_ref}.
-
-lookup_event(Ref = #ref{event_db = EventDB}, Track = #track{env = Env, app = App, event = Event}) ->
-  handle_event(EventDB:get(Env, App, Event), Ref, Track).
-
-handle_event({ok, Reward, Cardinality}, Ref, Track) ->
-  lookup_user_assignments(Ref, Track#track{reward = Reward, cardinality = Cardinality});
-handle_event({ok, Reward}, Ref, Track) ->
-  lookup_user_assignments(Ref, Track#track{reward = Reward});
-handle_event({error, notfound}, _, _) ->
-  ok;
-handle_event(Error, _, _) ->
-  Error.
-
-lookup_user_assignments(Ref = #ref{user_db = UserDB}, Track = #track{env = Env, app = App, user = User}) ->
-  handle_user_assignments(UserDB:assignments(Env, App, User), Ref, Track).
-
-handle_user_assignments({ok, Assignments}, Ref, Track) ->
-  maybe_reward(Assignments, Ref, Track);
-handle_user_assignments(Error, _, _) ->
-  Error.
-
-%% TODO figure out bandit/arm expiration
-%%   do we:
-%%     save an expiration date?
-%%     save the assigned date and then lookup the max length?
-
-maybe_reward([{Bandit, Arm, Usages}|Assignments], Ref = #ref{user_db = UserDB}, Track = #track{env = Env, app = App, user = User, cardinality = Cardinality}) when Cardinality =< Usages, is_integer(Cardinality) ->
-  %% remove the assignment from the user - it's expired
-  ok = UserDB:remove_assignment(Env, App, User, Bandit, Arm),
-  reward({Bandit, Arm}, Ref, Track),
-  maybe_reward(Assignments, Ref, Track);
-maybe_reward([{Bandit, Arm, _Usages}|Assignments], Ref = #ref{user_db = UserDB}, Track = #track{env = Env, app = App, user = User}) ->
-  ok = UserDB:increment_usage(Env, App, User, Bandit, Arm),
-  reward({Bandit, Arm}, Ref, Track),
-  maybe_reward(Assignments, Ref, Track);
-maybe_reward([{Bandit, Arm}|Assignments], Ref, Track) ->
-  reward({Bandit, Arm}, Ref, Track),
-  maybe_reward(Assignments, Ref, Track);
-maybe_reward([], _Ref, _Track) ->
-  ok.
-
-reward({Bandit, Arm}, #ref{mab_state_db = MabStateDB}, #track{env = Env, app = App, reward = Reward})->
-  MabStateDB:add_reward(Env, App, Bandit, Arm, Reward).
-
+  pivot_track:track(Ref, Env, App, Event, User).
 
 % content owner
 
 % -spec assign(ref(), app(), user()) -> [{bandit(), arm()}].
+
+%new_assign(Env, Ref, App, User) ->
+%  lookup_ref(ref_server:get(?MODULE, Ref, ref), #state{env = Env, app = App, user = User}, fun lookup_user_assignments/2).
+
 assign(Env, Ref, App, User) ->
   % Lookup the current bandit assignments for the user in the user_db
   {ok, UserDB} = ref_server:get(?MODULE, Ref, user_db),
@@ -157,10 +96,12 @@ assign(Env, Ref, App, User) ->
   {ok, [{EnabledBandit, SelectedArm}]}.
 
 % -spec register(ref(), app(), bandit(), [{arm(), boolean()}], config()) -> ok.
-register(Ref, App, Bandit, Arms, Config) ->
+register(Ref, Env, App, Bandit, Arms, Config) ->
+  {ok, RefConf} = ref_server:get(?MODULE, Ref, ref),
+
   % Add the bandit to the app's list
-  {ok, AppDB} = ref_server:get(?MODULE, Ref, app_db),
-  ok = AppDB:add(App, Bandit),
+  AppDB = RefConf#ref.app_db,
+  ok = AppDB:add(Env, App, Bandit),
 
   % Set the config for the mab
   {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),

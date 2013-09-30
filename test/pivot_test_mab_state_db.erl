@@ -1,13 +1,13 @@
 -module(pivot_test_mab_state_db).
 
 -export([init/3]).
--export([update/3]).
+-export([add_reward/5]).
 -export([get/3]).
 
 init(_App, _Bandit, _State) ->
   ok.
 
-update(_App, _Score, _BanditArmPairs) ->
+add_reward(_Env, _App, _Score, _Bandit, _Arm) ->
   ok.
 
 get(_App, _Bandit, Arms) ->
