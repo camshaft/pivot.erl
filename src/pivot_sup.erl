@@ -1,14 +1,23 @@
--module(pivot_app).
--behaviour(application).
+%% @private
+-module(pivot_sup).
+-behaviour(supervisor).
 
 %% API.
--export([start/2]).
--export([stop/1]).
+-export([start_link/0]).
+
+%% supervisor.
+-export([init/1]).
+
+-define(SUPERVISOR, ?MODULE).
 
 %% API.
 
-start(_Type, _Args) ->
-  pivot_sup:start_link().
+-spec start_link() -> {ok, pid()}.
+start_link() ->
+  supervisor:start_link({local, ?SUPERVISOR}, ?MODULE, []).
 
-stop(_State) ->
-  ok.
+%% supervisor.
+
+init([]) ->
+  Procs = [],
+  {ok, {{one_for_one, 10, 10}, Procs}}.

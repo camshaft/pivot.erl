@@ -1,38 +1,102 @@
 -module(pivot_test).
 
 -include_lib("eunit/include/eunit.hrl").
+-include("../src/pivot_clients_api.hrl").
 
-full_test() ->
-  Env = <<"test">>,
-  Ref = my_test,
-  AppID = <<"app">>,
-  UserID = <<"user">>,
+first_test() ->
+  ok = inets:start(),
+  ok = riakou:start(),
+  application:start(crypto),
+  ok = riakou:start_link(simple_env:get_binary("RIAK_URL", <<"riak://localhost">>)),
+  ok = riakou:wait_for_connection(),
 
-  %% Ref, UserDB, MabStateDB, MabConfigDB, EventDB, AppDB
-  pivot:start(Ref, pivot_test_user_db, pivot_test_mab_arms_db, pivot_test_mab_state_db, pivot_test_mab_config_db, pivot_test_event_db, pivot_test_app_db),
-  
-  %% Ref, App, Bandit, Arms, Config
-  ok = pivot:register(Ref, Env, AppID, <<"bandit-1">>, [
-    {<<"arm-1">>, true},
-    {<<"arm-2">>, false},
-    {<<"arm-3">>, true}
-  ], [
-    {algorithm, pivot_mab_ucb1}
-  ]),
+  PReq = #pivot_req{
+    env = <<"test">>,
+    app = <<"app">>
+  },
 
-  ok = pivot:track(Ref, Env, AppID, <<"medium-event">>, UserID),
+  test_rewards(PReq),
+  test_bandits(PReq),
+  test_arms(PReq).
 
-  {ok, _Assignments} = pivot:assign(Ref, Env, AppID, UserID),
+test_rewards(PReq) ->
+  ok = pivot_client:do(rewards, clear, PReq),
 
-  {ok, 250, _} = pivot:report(Ref, AppID, <<"bandit-1">>),
-  {ok, _} = pivot:list(Ref, AppID),
+  ok = pivot_client:do(rewards, set, PReq#pivot_req{
+    reward = <<"0.1">>,
+    event = <<"event1">>
+  }),
 
-  ok = pivot:configure(Ref, AppID, <<"bandit-1">>, []),
+  ok = pivot_client:do(rewards, set, PReq#pivot_req{
+    reward = <<"0.9">>,
+    event = <<"event2">>
+  }),
 
-  {ok, Events} = pivot:get_events(Ref, AppID),
+  {ok, <<"0.9">>} = pivot_client:do(rewards, get, PReq#pivot_req{
+    event = <<"event2">>
+  }),
 
-  [pivot:get_event(Ref, AppID, Event) || {Event, _Reward} <- Events],
+  {ok, Pairs} = pivot_client:do(rewards, list, PReq#pivot_req{}),
+  assert_key(<<"event1">>, <<"0.1">>, Pairs),
+  assert_key(<<"event2">>, <<"0.9">>, Pairs).
 
-  ok = pivot:set_event(Ref, AppID, <<"new-event">>, 0.8),
+test_bandits(PReq) ->
+  ok = pivot_client:do(bandits, clear, PReq),
 
-  pivot:stop(Ref).
+  ok = pivot_client:do(bandits, enable, PReq#pivot_req{
+    bandit = <<"bandit1">>
+  }),
+  ok = pivot_client:do(bandits, enable, PReq#pivot_req{
+    bandit = <<"bandit2">>
+  }),
+
+  {ok, EnabledBandits} = pivot_client:do(bandits, enabled, PReq#pivot_req{}),
+  assert_member(<<"bandit1">>, EnabledBandits),
+  assert_member(<<"bandit2">>, EnabledBandits),
+
+  ok = pivot_client:do(bandits, disable, PReq#pivot_req{
+    bandit = <<"bandit2">>
+  }),
+
+  {ok, EnabledBandits2} = pivot_client:do(bandits, enabled, PReq#pivot_req{}),
+  assert_member(<<"bandit1">>, EnabledBandits2),
+  assert_not_member(<<"bandit2">>, EnabledBandits2),
+
+  {ok, DisabledBandits} = pivot_client:do(bandits, disabled, PReq#pivot_req{}),
+  assert_not_member(<<"bandit1">>, DisabledBandits),
+  assert_member(<<"bandit2">>, DisabledBandits),
+
+  ok = pivot_client:do(bandits, enable, PReq#pivot_req{
+    bandit = <<"bandit3">>
+  }),
+  ok = pivot_client:do(bandits, enable, PReq#pivot_req{
+    bandit = <<"bandit4">>
+  }),
+
+  ok = pivot_client:do(bandits, remove, PReq#pivot_req{
+    bandit = <<"bandit3">>
+  }),
+
+  {ok, Bandits} = pivot_client:do(bandits, list, PReq#pivot_req{}),
+  assert_key(<<"bandit1">>, true, Bandits),
+  assert_key(<<"bandit2">>, false, Bandits),
+  assert_key(<<"bandit3">>, undefined, Bandits),
+  assert_key(<<"bandit4">>, true, Bandits).
+
+test_arms(PReq) ->
+  ok = pivot_client:do(arms, enable, PReq#pivot_req{
+    bandit = <<"bandit1">>,
+    arm = <<"arm1">>
+  }),
+  ok = pivot_client:do(arms, enable, PReq#pivot_req{
+    bandit = <<"bandit2">>,
+    arm = <<"arm1">>
+  }).
+
+assert_key(Key, Value, List) ->
+  ?assertEqual(fast_key:get(Key, List), Value).
+
+assert_member(Key, List) ->
+  ?assert(lists:member(Key, List)).
+assert_not_member(Key, List) ->
+  ?assertNot(lists:member(Key, List)).

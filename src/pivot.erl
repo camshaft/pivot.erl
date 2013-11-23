@@ -1,180 +1,143 @@
+%% -*- coding: utf-8 -*-
 -module(pivot).
 
-% app api
--export([start/7]).
--export([stop/1]).
-
-% client
--export([track/5]).
-
-% server
--export([assign/4]).
--export([register/6]).
-
-% api
--export([list/2]).
--export([report/3]).
--export([configure/4]).
--export([get_events/2]).
--export([get_event/3]).
--export([set_event/4]).
-
--define(DEFAULT_ALGORITHM, pivot_mab_ucb1).
+-export([p/1]).
+-export([do_p/1]).
+-export([s/1]).
+-export([do/3]).
+-export([do_async/3]).
+-export([new/1]).
+% private
+-export([noop/5]).
+-export([bootstrap/0]).
 
 -include("pivot.hrl").
 
-% app api
+-define(LOG(NS, Fun, Time, App, ReqID),
+  io:format("measure#~p.~p=~pus count#req.~p.~p=1 app=~s request_id=~s~n", [NS, Fun, Time, NS, Fun, App, ReqID])).
 
-start(Ref, UserDB, MabArmsDB, MabStateDB, MabConfigDB, EventDB, AppDB) ->
-  require([ref_server]),
-  ok = ref_server:set(?MODULE, Ref, ref, #ref{
-    user_db = UserDB,
-    mab_arms_db = MabArmsDB,
-    mab_state_db = MabStateDB,
-    mab_config_db = MabConfigDB,
-    event_db = EventDB,
-    app_db = AppDB
-  }),
-  {ok, Ref}.
+%% TODO allow switching logging on/off
+%% TODO use throttled io
 
-stop(_Ref) ->
+% -define(LOG(NS, Fun, Time, App, ReqID),
+%   (case Time > 20000 of
+%     true ->
+%       io:format("measure#~p.~p=~pms count#req.~p.~p=1 app=~s request_id=~s~n", [NS, Fun, Time/1000, NS, Fun, App, ReqID]);
+%     _ ->
+%       ok
+%   end)).
+
+% -undef(LOG).
+% -define(LOG(NS, Fun, Time, App, ReqID), noop(NS, Fun, Time, App, ReqID)).
+
+p(Funs) ->
+  rpc:pmap({?MODULE, do_p}, [], Funs).
+
+do_p({NS, Fun, Req}) ->
+  case catch ?MODULE:do(NS, Fun, Req) of
+    {'EXIT', {undef, _}} ->
+      {error, {undef, NS, Fun}};
+    {'EXIT', Error} ->
+      {error, Error};
+    Res ->
+      Res
+  end.
+
+%% TODO make series dependencies
+s(_Funs) ->
   ok.
 
-% client
+new(Props) ->
+  % new(Props, #pivot_req{}).
+  new(Props, #pivot_req{
+    id = <<"invalid-request-id">>,
+    env = <<"production">>,
+    version = <<"*">>
+  }).
 
-% -spec track(ref(), app(), event(), user()) -> ok.
-track(Ref, Env, App, Event, User) ->
-  pivot_track:track(Ref, Env, App, Event, User).
+new([], Req) ->
+  Req;
+new([{id, V}|Props], Req) ->
+  new(Props, Req#pivot_req{id = V});
+new([{env, V}|Props], Req) ->
+  new(Props, Req#pivot_req{env = V});
+new([{app, V}|Props], Req) ->
+  new(Props, Req#pivot_req{app = V});
+new([{version, V}|Props], Req) ->
+  new(Props, Req#pivot_req{version = V});
+new([{token, V}|Props], Req) ->
+  new(Props, Req#pivot_req{token = V});
+new([{event, V}|Props], Req) ->
+  new(Props, Req#pivot_req{event = V});
+new([{bandit, V}|Props], Req) ->
+  new(Props, Req#pivot_req{bandit = V});
+new([{arm, V}|Props], Req) ->
+  new(Props, Req#pivot_req{arm = V});
+new([{arms, V}|Props], Req) ->
+  new(Props, Req#pivot_req{arms = V});
+new([{reward, V}|Props], Req) ->
+  new(Props, Req#pivot_req{reward = V});
+new([{selections, V}|Props], Req) ->
+  new(Props, Req#pivot_req{selections = V});
+new([{event_set, V}|Props], Req) ->
+  new(Props, Req#pivot_req{event_set = V});
+new([{count, V}|Props], Req) ->
+  new(Props, Req#pivot_req{count = V});
+new([{score, V}|Props], Req) ->
+  new(Props, Req#pivot_req{score = V}).
 
-% content owner
+do(NS, Fun, Req = #pivot_req{id = ReqID, app = App}) ->
+  {Time, Res} = timer:tc(mod(NS), Fun, [Req]),
+  ?LOG(NS, Fun, Time, App, ReqID),
+  case Res of
+    {error, no_connections} = E ->
+      io:format("count#no_connections.~s.~s=1 app=~s request_id=~s~n", [NS, Fun, Req#pivot_req.app, Req#pivot_req.id]),
+      E;
+    Res2 ->
+      Res2
+  end.
 
-% -spec assign(ref(), app(), user()) -> [{bandit(), arm()}].
+do_async(NS, Fun, Req) ->
+  %% TODO supervise this
+  %% TODO if we've got a lot of backpressure let's block
+  %% TODO allow for a priority setting based on {NS, Fun}
+  spawn_link(?MODULE, do, [NS, Fun, Req]),
+  ok.
 
-%new_assign(Env, Ref, App, User) ->
-%  lookup_ref(ref_server:get(?MODULE, Ref, ref), #state{env = Env, app = App, user = User}, fun lookup_user_assignments/2).
+%% TODO allow setting the resolution - maybe though an ets table?
+mod(rewards) ->
+  pivot_rewards;
+mod(events) ->
+  pivot_events;
+mod(assignments) ->
+  pivot_assignments;
+mod(event_set) ->
+  pivot_event_set;
+mod(arm_state) ->
+  pivot_arm_state;
+mod(bandit_state) ->
+  pivot_bandit_state;
+mod(selections) ->
+  pivot_selections;
+mod(bandits) ->
+  pivot_bandits;
+mod(arms) ->
+  pivot_arms;
+mod(Mod) ->
+  Mod.
 
-assign(Env, Ref, App, User) ->
-  % Lookup the current bandit assignments for the user in the user_db
-  {ok, UserDB} = ref_server:get(?MODULE, Ref, user_db),
-  {ok, _Assignments} = UserDB:assignments(Env, App, User),
+noop(_, _, _, _, _) ->
+  ok.
 
-  % List the bandits for the app
-  {ok, AppDB} = ref_server:get(?MODULE, Ref, app_db),
-  {ok, Bandits} = AppDB:bandits(Env, App),
-
-  % Fetch the bandit configs from the bandit_db (which algorithm, expiration, etc)
-  {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
-  {ok, Configs} = MabConfigDB:configs(Env, App, Bandits),
-
-  % If the user's bandit selection is still valid just return that
-  % TODO
-
-  % Make a bandit selection for the user
-  % TODO
-  EnabledBandit = hd(Bandits),
-  {_, BanditConfig} = hd(Configs),
-
-  Algorithm = fast_key:get(algorithm, BanditConfig, ?DEFAULT_ALGORITHM),
-  AlgorithmConfig = fast_key:get(algorithm_config, BanditConfig, []),
-
-  % Filter any disabled arms for each of the bandits
-  {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
-  {ok, EnabledArms} = MabArmsDB:enabled(Env, App, EnabledBandit),
-
-  % Fetch the state from the mab_state_db for the bandits
-  {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
-  {ok, State} = MabStateDB:get(Env, App, EnabledBandit, EnabledArms),
-
-  % Feed the state to the chosen algorithm
-  {ok, SelectedArm, _NewState} = Algorithm:select(State, AlgorithmConfig),
-
-  % Save the chosen bandits/arms to the user_db
-  % TODO
-  ok = UserDB:set(Env, App, User, [{EnabledBandit, SelectedArm, []}]),
-
-  % Return the assigned arms
-  {ok, [{EnabledBandit, SelectedArm}]}.
-
-% -spec register(ref(), app(), bandit(), [{arm(), boolean()}], config()) -> ok.
-register(Ref, Env, App, Bandit, Arms, Config) ->
-  {ok, RefConf} = ref_server:get(?MODULE, Ref, ref),
-
-  % Add the bandit to the app's list
-  AppDB = RefConf#ref.app_db,
-  ok = AppDB:add(Env, App, Bandit),
-
-  % Set the config for the mab
-  {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
-  ok = MabConfigDB:set(App, Bandit, Config),
-
-  % Initialize the state in mab_state_db
-  Algorithm = fast_key:get(algorithm, Config, ?DEFAULT_ALGORITHM),
-  AlgorithmConfig = fast_key:get(algorithm_config, Config, []),
-  {ok, InitialState} = Algorithm:init(AlgorithmConfig),
-
-  {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
-  ok = MabStateDB:init(App, Bandit, InitialState),
-
-  % Set the arms for the bandit in the mab_arms_db
-  {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
-  MabArmsDB:set(App, Bandit, Arms).
-
-% api
-
-list(Ref, App) ->
-  % List all of the bandits for an app
-  {ok, AppDB} = ref_server:get(?MODULE, Ref, app_db),
-  AppDB:bandits(App).
-
-% -spec report(ref(), app(), bandit()) -> {ok, plays(), [{arm(), score()}]} | {error, notfound}.
-report(Ref, App, Bandit) ->
-  % Set the arms for the bandit in the mab_arms_db
-  {ok, MabArmsDB} = ref_server:get(?MODULE, Ref, mab_arms_db),
-  {ok, Arms} = MabArmsDB:all(App, Bandit),
-
-  % Fetch the bandit state from the mab_db
-  {ok, MabStateDB} = ref_server:get(?MODULE, Ref, mab_state_db),
-  {ok, State} = MabStateDB:get(App, Bandit, Arms),
-
-  % Fetch the config for the algorithm
-  {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
-  {ok, Config} = MabConfigDB:config(App, Bandit),
-
-  Algorithm = fast_key:get(algorithm, Config, ?DEFAULT_ALGORITHM),
-  AlgorithmConfig = fast_key:get(algorithm_config, Config, []),
-
-  % Calculate the confidence of the tests and return the report
-  Algorithm:report(State, AlgorithmConfig).
-
-%% TODO set the default arm
-%% TODO set the MAB algorithm
-%% TODO set the arm expiration (how long an arm is assigned to a user)
-configure(Ref, App, Bandit, Config) ->
-  {ok, MabConfigDB} = ref_server:get(?MODULE, Ref, mab_config_db),
-  MabConfigDB:set(App, Bandit, Config).
-
-% -spec get_event_reward(ref(), app()) -> [{event(), reward()}].
-get_events(Ref, App) ->
-  {ok, EventDB} = ref_server:get(?MODULE, Ref, event_db),
-  EventDB:all(App).
-
-% -spec get_event(ref(), event()) -> ok.
-get_event(Ref, App, Event) ->
-  {ok, EventDB} = ref_server:get(?MODULE, Ref, event_db),
-  EventDB:get(App, Event).
-
-% -spec set_event(ref(), event(), reward()) -> ok.
-set_event(Ref, App, Event, Reward) ->
-  {ok, EventDB} = ref_server:get(?MODULE, Ref, event_db),
-  EventDB:set(App, Event, Reward).
-
-%% @doc Start the given applications if they were not already started.
--spec require(list(module())) -> ok.
-require([]) ->
-  ok;
-require([App|Tail]) ->
-  case application:start(App) of
-    ok -> ok;
-    {error, {already_started, App}} -> ok
-  end,
-  require(Tail).
+bootstrap() ->
+  Req = new([]),
+  p([
+    {bandits, enable, Req#pivot_req{bandit = <<"bandit1">>}},
+    {arms, enable, Req#pivot_req{bandit = <<"bandit1">>, arm = <<"arm1">>}},
+    {arms, enable, Req#pivot_req{bandit = <<"bandit1">>, arm = <<"arm2">>}},
+    {bandits, enable, Req#pivot_req{bandit = <<"bandit2">>}},
+    {arms, enable, Req#pivot_req{bandit = <<"bandit2">>, arm = <<"arm1">>}},
+    {arms, enable, Req#pivot_req{bandit = <<"bandit2">>, arm = <<"arm2">>}},
+    {rewards, set, Req#pivot_req{reward = <<"1.0">>, event = <<"purchase">>}},
+    {rewards, set, Req#pivot_req{reward = <<"0.0">>, event = <<"leave">>}}
+  ]).
